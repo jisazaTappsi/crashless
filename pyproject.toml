@@ -1,0 +1,18 @@
+[project]
+name = "crashless"
+version = "0.0.1"
+authors = [
+  { name="Juan Isaza", email="biosolardecolombia@gmail.com" },
+]
+description = "Bugless future for our sanity sake"
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/jisazaTappsi/crashless"
+Issues = "https://github.com/jisazaTappsi/crashless/issues"

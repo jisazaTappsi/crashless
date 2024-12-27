@@ -1,0 +1,5 @@
+.idea
+dist/
+.venv
+src/crashless.egg-info/
+src/crashless/__pycache__/
