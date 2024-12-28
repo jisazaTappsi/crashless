@@ -2,4 +2,4 @@
 dist/
 .venv
 src/crashless.egg-info/
-src/crashless/__pycache__/
+__pycache__

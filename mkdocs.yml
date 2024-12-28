@@ -1,0 +1,4 @@
+site_name: Crashless docs
+site_url: https://crashless.ai/docs
+theme:
+  name: material
