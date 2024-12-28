@@ -29,10 +29,7 @@ Crashless is published as a Python package and can be installed with pip, ideall
     
         @app.get("/crash")  # This endpoint has a fatal bug :(
         def crash():
-            a = 8
-            b = 7  # Changed 'b' to an integer
-            print("Ooops, I'll crash ...")
-            result = a + b
+            result = 8 + '7'
             return {'msg': f"Summing a+b = {result}"}
         
         
