@@ -3,3 +3,5 @@ dist/
 .venv
 src/crashless.egg-info/
 __pycache__
+deploy
+debug

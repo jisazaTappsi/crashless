@@ -1,5 +1,7 @@
+import os
 import re
 import ast
+import time
 import tokenize
 import tempfile
 import traceback
@@ -106,6 +108,10 @@ def ask_to_fix_code(diffs, new_code, current_file_path, explanation):
     if apply_changes:
         with open(current_file_path, "w") as file:
             file.write(new_code)
+            os.utime(current_file_path, (time.time(), time.time()))
+            return True
+
+    return False
 
 
 class CodeEnvironment(BaseModel):
@@ -262,7 +268,6 @@ def handle_exception(request: Request, exc: Exception):
 
     diffs = get_diffs(old_code, new_code)
     if diffs is None:
-        print('No solution found :(')
         return JSONResponse(
             status_code=500,
             content={
@@ -273,13 +278,14 @@ def handle_exception(request: Request, exc: Exception):
         )
 
     print_with_color(last_environment.stacktrace_str, BColors.FAIL)
-    ask_to_fix_code(diffs, new_code, last_environment.file_path, explanation)
+    changes_applied = ask_to_fix_code(diffs, new_code, last_environment.file_path, explanation)
 
+    detail = 'Deploying changes, to fix the issue :)' if changes_applied else 'Code still has this pesky bug :('
     return JSONResponse(
         status_code=500,
         content={
             'error': str(exc),
-            'detail': 'We are deploying code to fix the issue :), checkout your terminal to see changes',
             'explanation': explanation,
+            'detail': detail,
         }
     )

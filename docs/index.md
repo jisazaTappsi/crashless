@@ -4,8 +4,6 @@
 Crashless enables you to catch those pesky bugs during backend development and correct them in real-time. Makes your development cycle smooth, so you can actually focus on building what actually matters.
 
 
-**Source Code:** <https://github.com/jisazaTappsi/crashless>
-
 ## Installation
 
 Crashless is published as a Python package and can be installed with pip, ideally by using a virtual environment. Open up a terminal and install Crashless with:
@@ -81,7 +79,7 @@ Crashless is published as a Python package and can be installed with pip, ideall
         Explanation: The error occurred because you cannot add an integer and a string directly. The fix converts the string '7' to
         an integer using int('7') before performing the addition.
 
-        You can apply changes by ENTERING a 'y'. The changes will take place and the api reloads. If you try again you get 15!
+   You can apply changes by ENTERING a `y`. The changes will take place and the api reloads. If you try again you get 15!
 
 
 ## Add to Django in 3 steps
@@ -91,3 +89,10 @@ coming soon!
 ## Add to Flask in 3 steps
 
 coming soon!
+
+
+## Links
+
+**Source Code:** <https://github.com/jisazaTappsi/crashless>
+
+**Python library**: <https://pypi.org/project/crashless/>
