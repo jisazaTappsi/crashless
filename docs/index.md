@@ -4,7 +4,7 @@
 Crashless enables you to catch those pesky bugs during backend development and correct them in real-time. Makes your development cycle smooth, so you can actually focus on building what actually matters.
 
 
-**Source Code:** https://github.com/jisazaTappsi/crashless
+**Source Code:** <https://github.com/jisazaTappsi/crashless>
 
 ## Installation
 
