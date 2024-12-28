@@ -62,28 +62,26 @@ Crashless is published as a Python package and can be installed with pip, ideall
 
 3. Go to <http://127.0.0.1:8000> and check that it's running OK.
 
-   Then go to <http://127.0.0.1:8000/crash> and see how it crashes.
+    Then go to <http://127.0.0.1:8000/crash> and see how it crashes.
 
-   Now go to the terminal, where the server is running, and you'll see something like this:
+    Now go to the terminal, where the server is running, and you'll see something like this:
 
-       TypeError: unsupported operand type(s) for +: 'int' and 'str'
-   
-       Error detected, let's fix it!
-       The following code changes will be applied:
-       @app.get("/crash")
-       def crash():
-           a = 8
-       -    b = '7'
-       +    b = 7
-           print("Ooops, I'll crash ...")
-           result = a + b
-           return {'msg': f"Summing a+b = {result}"}
-   
-       Explanation: The variable 'b' was a string, which caused a TypeError when trying to add it to an integer. Changing 'b'
-       to an integer resolved the issue.
-       Apply changes(y/n)?: 
+        TypeError: unsupported operand type(s) for +: 'int' and 'str'
 
-   You can apply changes by ENTERING a 'y'. The changes will take place and the api reloads. If you try again you get 15!
+        Error detected, let's fix it!
+        The following code changes will be applied:
+ 
+         @app.get("/crash")  # This endpoint has a fatal bug :(
+         def crash():
+        -    result = 8 + '7'
+        +    result = 8 + int('7')
+         return {'msg': f"Summing a+b = {result}"}
+
+
+        Explanation: The error occurred because you cannot add an integer and a string directly. The fix converts the string '7' to
+        an integer using int('7') before performing the addition.
+
+        You can apply changes by ENTERING a 'y'. The changes will take place and the api reloads. If you try again you get 15!
 
 
 ## Add to Django in 3 steps
