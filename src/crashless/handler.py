@@ -265,6 +265,7 @@ def get_environment(stacktrace, exc):
     error_code_line = file_lines[error_line_number - 1]  # zero based counting
     code_lines, start_scope_index, end_scope_index = get_context_code_lines(error_line_number, file_lines, file_content)
     code = ''.join(code_lines)
+    code = code.strip()  # prevent a last \n from introducing a fake extra line.
 
     local_vars = get_local_vars(stacktrace)
     code_definitions = get_code_definitions(local_vars)
