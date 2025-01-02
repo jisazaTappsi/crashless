@@ -9,18 +9,17 @@ import tempfile
 import traceback
 import subprocess
 from io import BytesIO
-from typing import List, Union, Optional
+from typing import List, Union
 from collections import defaultdict
 
 import requests
 from pip._internal.operations import freeze
 
 from pydantic import BaseModel
-from starlette.requests import Request
-from fastapi.responses import JSONResponse
 
 GIT_HEADER_REGEX = r'@@.*@@.*\n'
 MAX_CONTEXT_MARGIN = 100
+PATCH_FILENAME = 'changes.patch'
 
 
 class CodeFix(BaseModel):
@@ -52,23 +51,48 @@ class BColors:
     UNDERLINE = '\033[4m'
 
 
-def get_diffs(code1, code2):
-    with tempfile.NamedTemporaryFile(mode='w') as diff_file1, tempfile.NamedTemporaryFile(mode='w') as diff_file2:
+def get_git_root():
+    result = subprocess.run('git rev-parse --show-toplevel', capture_output=True, text=True, shell=True)
+    return result.stdout.strip()
+
+
+def get_git_path(absolute_path):
+    return absolute_path.replace(get_git_root(), '')
+
+
+def get_diffs_and_patch(old_code, new_code, code_environment):
+    with tempfile.NamedTemporaryFile(mode='w') as temp_old_file, tempfile.NamedTemporaryFile(mode='w') as temp_new_file:
         try:
-            diff_file1.write(code1)
-            diff_file2.write(code2)
+            temp_old_file.write(old_code)
+            temp_new_file.write(new_code)
         except UnicodeEncodeError:
             return None
 
-        diff_file1.flush()  # makes sure that contents are written to file
-        diff_file2.flush()
+        temp_old_file.flush()  # makes sure that contents are written to file
+        temp_new_file.flush()
 
         # Run "git diff" comparing temporary files.
-        subprocess_result = subprocess.run(f'git diff --no-index {diff_file1.name} {diff_file2.name}',
-                                           capture_output=True, text=True, shell=True)
+        result = subprocess.run(f'git diff --no-index {temp_old_file.name} {temp_new_file.name}',
+                                capture_output=True, text=True, shell=True)
+
+        subprocess.run(f'git diff --no-index {temp_old_file.name} {temp_new_file.name} > {PATCH_FILENAME}',
+            capture_output=True, text=True, shell=True)
+        with open(PATCH_FILENAME, 'r+') as patch_file:
+            patch = patch_file.read()
+            git_path = get_git_path(code_environment.file_path)
+            patch = patch.replace(temp_old_file.name, git_path).replace(temp_new_file.name, git_path)
+
+            # Move the pointer to the beginning
+            patch_file.seek(0)
+
+            # Write the modified content
+            patch_file.write(patch)
+
+            # Truncate the remaining part of the file
+            patch_file.truncate()
 
         # Removes header with the context to get only the code resulting from the "git diff".
-        result_str = subprocess_result.stdout
+        result_str = result.stdout
         diff_content = re.split(GIT_HEADER_REGEX, result_str)
 
     try:
@@ -108,22 +132,16 @@ def ask_to_fix_code(solution):
     apply_changes = True if input('Apply changes(y/n)?: ') == 'y' else False
     if apply_changes:
         print_with_color('Please wait while changes are deployed...', BColors.WARNING)
-        with open(solution.file_path, "w") as file:
-            file.write(solution.new_code)
-            file.flush()  # Flush internal buffer
-            os.fsync(file.fileno())  # Force write to disk
-        #os.utime(solution.file_path, None)
-
-        # Rename the file to trigger watcher
-        temp_path = solution.file_path + 'temp'
-        shutil.move(solution.file_path, temp_path)
-        shutil.move(temp_path, solution.file_path)
-        time.sleep(1)
-        solution.action = 'Changes have been deployed :)'
+        subprocess.run(f'git apply {PATCH_FILENAME}', capture_output=True, text=True, shell=True)
+        solution.action = \
+            "Changes have been deployed :)\nIf on PyCharm and you don't see changes reload UI with: Ctrl+Alt+Y"
     else:
         solution.action = 'Code still has this pesky bug :('
 
     print_with_color(solution.action, BColors.WARNING)
+
+    # Finally removes patch file
+    os.remove(PATCH_FILENAME)
     return solution
 
 
@@ -308,7 +326,7 @@ def get_solution(last_environment):
     lines_below = file_lines[last_environment.end_scope_index:]
     new_code = '\n'.join(lines_above + code_pieces + lines_below)
 
-    diffs = get_diffs(old_code, new_code)
+    diffs = get_diffs_and_patch(old_code, new_code, last_environment)
 
     return Solution(
         diffs=diffs,
