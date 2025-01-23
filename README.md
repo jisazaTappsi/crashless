@@ -66,7 +66,8 @@ Crashless is published as a Python package and can be installed with pip, ideall
 
         TypeError: unsupported operand type(s) for +: 'int' and 'str'
 
-        Error detected, let's fix it!
+        Crashless detected an error, let's fix it!
+        Loading possible solution...
         The following code changes will be applied:
  
          @app.get("/crash")  # This endpoint has a fatal bug :(
