@@ -345,7 +345,7 @@ def get_solution(environments, temp_patch_file, exc):
     # there's no code
     if code_fix.fixed_code is None:
         return Solution(
-            not_found=True,
+            not_found=False,
             file_path=code_fix.file_path,
             explanation=explanation,
             stacktrace_str=stacktrace_str
