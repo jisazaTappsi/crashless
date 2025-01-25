@@ -21,10 +21,10 @@ MAX_CONTEXT_MARGIN = 100
 
 
 class CodeFix(BaseModel):
+    index: int
+    file_path: str
     fixed_code: str = None
     explanation: str = None
-    file_path: str
-    environment_index: int
 
 
 def get_code_fix(environments, stacktrace_str):
@@ -357,7 +357,7 @@ def get_solution(environments, temp_patch_file, exc):
         old_code = file_code.read()
         file_lines = old_code.split('\n')
 
-    fixed_environment = environments[code_fix.environment_index]
+    fixed_environment = environments[code_fix.index]
     lines_above = file_lines[:fixed_environment.start_scope_index]
     lines_below = file_lines[fixed_environment.end_scope_index:]
     new_code = '\n'.join(lines_above + code_pieces + lines_below)
