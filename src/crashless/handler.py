@@ -23,15 +23,20 @@ MAX_CONTEXT_MARGIN = 100
 class CodeFix(BaseModel):
     fixed_code: str = None
     explanation: str = None
+    file_path: str
+    environment_index: int
 
 
-def process_code_fix_suggestion(environment):
-    url = f'{BACKEND_DOMAIN}/crashless/process-code-fix-suggestion'
-    response = requests.post(url, data=environment.to_json(),
-                             headers={'accept': 'application/json', 'accept-language': 'en'})
+def get_code_fix(environments, stacktrace_str):
+    response = requests.post(
+        url=f'{BACKEND_DOMAIN}/crashless/get-crash-fix',
+        data=Payload(packages=list(freeze.freeze()),
+                     stacktrace_str=stacktrace_str,
+                     environments=environments).json(),
+        headers={'accept': 'application/json', 'accept-language': 'en'}
+    )
     json_response = response.json()
-    return CodeFix(fixed_code=json_response.get('fixed_code'),
-                   explanation=json_response.get('explanation'))
+    return CodeFix(**json_response)
 
 
 class BColors:
@@ -139,21 +144,28 @@ def ask_to_fix_code(solution, temp_patch_file):
 
 
 class CodeEnvironment(BaseModel):
+    index: int
     file_path: str
     code: str
     start_scope_index: int
     end_scope_index: int
     error_code_line: str
-    local_vars: Union[dict, str]
+    local_vars: str
     error_line_number: int
     total_file_lines: int
-    packages: List[str]
-    stacktrace_str: str
     code_definitions: List[str]
 
+
+class Payload(BaseModel):
+    packages: List[str]
+    stacktrace_str: str
+    environments: List[CodeEnvironment]
+
     def to_json(self):
-        self.local_vars = str(self.local_vars)
-        return self.json()
+        environment_jsons = [e.to_json() for e in self.environments]
+        normal_json = self.json()
+        self.environments = environment_jsons
+        return self
 
 
 def get_code_lines(code):
@@ -255,7 +267,7 @@ def get_local_vars(stacktrace):
     return frame.f_locals
 
 
-def get_environment(stacktrace, exc):
+def get_environment(stacktrace, idx):
     file_path = get_file_path(stacktrace)
     error_line_number = stacktrace.tb_lineno
     with open(file_path, 'r') as file_code:
@@ -273,16 +285,15 @@ def get_environment(stacktrace, exc):
     code_definitions = get_code_definitions(local_vars)
 
     return CodeEnvironment(
+        index=idx,
         file_path=file_path,
         code=code,
         start_scope_index=start_scope_index,
         end_scope_index=end_scope_index,
         error_code_line=error_code_line,
-        local_vars=local_vars,
+        local_vars=str(local_vars),
         error_line_number=error_line_number,
         total_file_lines=total_file_lines,
-        packages=list(freeze.freeze()),
-        stacktrace_str=get_stacktrace(exc),
         code_definitions=code_definitions,
     )
 
@@ -297,7 +308,7 @@ def get_stacktrace(exc):
     return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
 
 
-def get_last_environment(exc):
+def get_environments(exc):
     # Find lowest non-lib level
     levels = []
     stacktrace_level = exc.__traceback__
@@ -315,48 +326,50 @@ def get_last_environment(exc):
     if not levels:
         raise exc
 
-    return get_environment(levels[-1], exc)
+    return [get_environment(level, idx) for idx, level in enumerate(levels)]
 
 
-def get_solution(last_environment, temp_patch_file):
-    code_fix = process_code_fix_suggestion(last_environment)
+def get_solution(environments, temp_patch_file, exc):
+    stacktrace_str = get_stacktrace(exc)
+    code_fix = get_code_fix(environments, stacktrace_str)
     explanation = code_fix.explanation
 
     # there's nothing
     if code_fix.fixed_code is None and explanation is None:
         return Solution(
             not_found=True,
-            file_path=last_environment.file_path,
-            stacktrace_str=last_environment.stacktrace_str
+            file_path=code_fix.file_path,
+            stacktrace_str=stacktrace_str
         )
 
     # there's no code
     if code_fix.fixed_code is None:
         return Solution(
             not_found=True,
-            file_path=last_environment.file_path,
+            file_path=code_fix.file_path,
             explanation=explanation,
-            stacktrace_str=last_environment.stacktrace_str
+            stacktrace_str=stacktrace_str
         )
 
     code_pieces = code_fix.fixed_code.split('\n')
 
-    with open(last_environment.file_path, "r") as file_code:
+    with open(code_fix.file_path, "r") as file_code:
         old_code = file_code.read()
         file_lines = old_code.split('\n')
 
-    lines_above = file_lines[:last_environment.start_scope_index]
-    lines_below = file_lines[last_environment.end_scope_index:]
+    fixed_environment = environments[code_fix.environment_index]
+    lines_above = file_lines[:fixed_environment.start_scope_index]
+    lines_below = file_lines[fixed_environment.end_scope_index:]
     new_code = '\n'.join(lines_above + code_pieces + lines_below)
 
-    diffs = get_diffs_and_patch(old_code, new_code, last_environment, temp_patch_file)
+    diffs = get_diffs_and_patch(old_code, new_code, fixed_environment, temp_patch_file)
 
     return Solution(
         diffs=diffs,
         new_code=new_code,
-        file_path=last_environment.file_path,
+        file_path=fixed_environment.file_path,
         explanation=explanation,
-        stacktrace_str=last_environment.stacktrace_str
+        stacktrace_str=stacktrace_str
     )
 
 
@@ -372,8 +385,8 @@ class Solution(BaseModel):
 def get_candidate_solution(exc, temp_patch_file):
     print_with_color("Crashless detected an error, let's fix it!", BColors.WARNING)
     print_with_color("Loading possible solution...", BColors.WARNING)
-    last_environment = get_last_environment(exc)
-    return get_solution(last_environment, temp_patch_file)
+    environments = get_environments(exc)
+    return get_solution(environments, temp_patch_file, exc)
 
 
 def get_content_message(exc):
