@@ -21,8 +21,8 @@ MAX_CONTEXT_MARGIN = 100
 
 
 class CodeFix(BaseModel):
-    index: int
-    file_path: str
+    index: int = None
+    file_path: str = None
     fixed_code: str = None
     explanation: str = None
 
