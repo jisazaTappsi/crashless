@@ -1,4 +1,4 @@
-DEBUG = True
+DEBUG = False
 BACKEND_DOMAIN = 'http://localhost:8000' if DEBUG else 'https://api.peaku.io'
 
 AVG_CHARS_PER_WORD = 5 + 1  # this includes 1 space per word.
