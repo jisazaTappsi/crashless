@@ -25,6 +25,7 @@ class CodeFix(BaseModel):
     file_path: str = None
     fixed_code: str = None
     explanation: str = None
+    error: str = None
 
 
 def get_code_fix(environments, stacktrace_str):
@@ -339,7 +340,8 @@ def get_solution(environments, temp_patch_file, exc):
         return Solution(
             not_found=True,
             file_path=code_fix.file_path,
-            stacktrace_str=stacktrace_str
+            stacktrace_str=stacktrace_str,
+            error=code_fix.error,
         )
 
     # there's no code
@@ -348,7 +350,8 @@ def get_solution(environments, temp_patch_file, exc):
             not_found=False,
             file_path=code_fix.file_path,
             explanation=explanation,
-            stacktrace_str=stacktrace_str
+            stacktrace_str=stacktrace_str,
+            error=code_fix.error,
         )
 
     code_pieces = code_fix.fixed_code.split('\n')
@@ -369,7 +372,8 @@ def get_solution(environments, temp_patch_file, exc):
         new_code=new_code,
         file_path=fixed_environment.file_path,
         explanation=explanation,
-        stacktrace_str=stacktrace_str
+        stacktrace_str=stacktrace_str,
+        error=code_fix.error,
     )
 
 
@@ -380,6 +384,7 @@ class Solution(BaseModel):
     file_path: Optional[str]
     explanation: Optional[str]
     stacktrace_str: Optional[str]
+    error: Optional[str]
 
 
 def get_candidate_solution(exc, temp_patch_file):
@@ -399,6 +404,11 @@ def get_content_message(exc):
 def threaded_function(exc):
     with tempfile.NamedTemporaryFile(mode='r+') as temp_patch_file:
         solution = get_candidate_solution(exc, temp_patch_file)
+
+        if solution.error:  # No changes but with explanation.
+            print_with_color("There was an error in crashless :(, please report it", BColors.WARNING)
+            print_with_color(f'Error: {add_newline_every_n_chars(solution.error)}', BColors.FAIL)
+            return
 
         if solution.not_found:
             print_with_color("No solution found :(, we'll try harder next time", BColors.WARNING)
