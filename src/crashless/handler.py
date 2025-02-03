@@ -7,8 +7,8 @@ import tempfile
 import traceback
 import subprocess
 from io import BytesIO
+from typing import List, Optional
 from collections import defaultdict
-from typing import List, Union, Optional
 from pip._internal.operations import freeze
 
 import requests
@@ -36,6 +36,9 @@ def get_code_fix(environments, stacktrace_str):
                      environments=environments).json(),
         headers={'accept': 'application/json', 'accept-language': 'en'}
     )
+    if response.status_code != 200:
+        return CodeFix(error=response.json().get('detail'))
+
     json_response = response.json()
     return CodeFix(**json_response)
 
