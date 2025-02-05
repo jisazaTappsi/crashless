@@ -104,7 +104,7 @@ def get_diffs_and_patch(old_code, new_code, code_environment, temp_patch_file):
     try:
         return diff_content[1:]  # returns a list of changes in different parts.
     except IndexError:
-        return None
+        return []
 
 
 def print_with_color(line, color):
@@ -326,10 +326,6 @@ def get_environments(exc):
 
         stacktrace_level = stacktrace_level.tb_next  # Move to the next level in the stack trace
 
-    # no pieces of code left to fix.
-    if not levels:
-        raise exc
-
     return [get_environment(level, idx) for idx, level in enumerate(levels)]
 
 
@@ -363,17 +359,25 @@ def get_solution(environments, temp_patch_file, exc):
         old_code = file_code.read()
         file_lines = old_code.split('\n')
 
-    fixed_environment = environments[code_fix.index]
-    lines_above = file_lines[:fixed_environment.start_scope_index]
-    lines_below = file_lines[fixed_environment.end_scope_index:]
-    new_code = '\n'.join(lines_above + code_pieces + lines_below)
+    if code_fix.index is None:
+        new_code = None
+        fixed_environment = None
+    else:
+        fixed_environment = environments[code_fix.index]
+        lines_above = file_lines[:fixed_environment.start_scope_index]
+        lines_below = file_lines[fixed_environment.end_scope_index:]
+        new_code = '\n'.join(lines_above + code_pieces + lines_below)
 
-    diffs = get_diffs_and_patch(old_code, new_code, fixed_environment, temp_patch_file)
+
+    if new_code is None:
+        diffs = []
+    else:
+        diffs = get_diffs_and_patch(old_code, new_code, fixed_environment, temp_patch_file)
 
     return Solution(
         diffs=diffs,
         new_code=new_code,
-        file_path=fixed_environment.file_path,
+        file_path=fixed_environment.file_path if fixed_environment else None,
         explanation=explanation,
         stacktrace_str=stacktrace_str,
         error=code_fix.error,
