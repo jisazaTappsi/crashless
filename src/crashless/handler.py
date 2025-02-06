@@ -218,11 +218,36 @@ def get_last_scope_index(scope_error, analyzer, error_line_number):
     return max(last_index, 0)  # cannot be negative
 
 
-def get_start_scope_index(scope_error, analyzer, error_line_number, file_length):
+def missing_definition_with_regex(line):
+    """Detects whether the line contains a class or method definition."""
+    optional_comment = r'\s*(#.*)?'
+    def_regex = rf'^\s*def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(.*\)\s*:{optional_comment}'
+    class_regex = rf'^\s*class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(\(.*\))?\s*:{optional_comment}'
+    decorator_regex = rf'^\s*@\w+(\([^)]*\))?{optional_comment}'
+    def_match = re.match(def_regex, line)
+    class_match = re.match(class_regex, line)
+    decorator_match = re.match(decorator_regex, line)
+    return def_match is None and class_match is None and decorator_match is None
+
+
+def missing_definition(first_index, lines):
+    if first_index == 0:
+        return False
+    return missing_definition_with_regex(line=lines[first_index])
+
+
+def get_start_scope_index(scope_error, analyzer, error_line_number, file_length, file_lines):
     first_index = min([line for line, scope in analyzer.line_scopes.items() if scope == scope_error])
-    first_index -= 1  # to include the method or class definition.
+    first_index -= 1  # change from 1 based indexing to 0 based indexing
+
     first_index = max(error_line_number - MAX_CONTEXT_MARGIN, first_index)  # hard limit on data amount
-    return min(first_index, file_length)  # cannot exceed the file's length
+    first_index = min(first_index, file_length)  # cannot exceed the file's length
+
+    # Sometimes definition of class or function is off by one line.
+    if first_index > 0 and missing_definition(first_index, file_lines):
+        first_index -= 1
+
+    return first_index
 
 
 def get_context_code_lines(error_line_number, file_lines, code):
@@ -236,7 +261,8 @@ def get_context_code_lines(error_line_number, file_lines, code):
     start_index = get_start_scope_index(scope_error=scope_error,
                                         analyzer=analyzer,
                                         error_line_number=error_line_number,
-                                        file_length=len(file_lines))
+                                        file_length=len(file_lines),
+                                        file_lines=file_lines)
     end_index = get_last_scope_index(scope_error=scope_error,
                                      analyzer=analyzer,
                                      error_line_number=error_line_number)
