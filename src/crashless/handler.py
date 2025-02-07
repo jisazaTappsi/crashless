@@ -1,13 +1,16 @@
 import os
 import re
 import ast
+import sys
+import types
 import inspect
 import tokenize
 import tempfile
 import traceback
 import subprocess
 from io import BytesIO
-from typing import List, Optional
+from types import ModuleType
+from typing import List, Dict
 from collections import defaultdict
 from pip._internal.operations import freeze
 
@@ -18,6 +21,29 @@ from crashless.cts import DEBUG, MAX_CHAR_WITH_BOUND, BACKEND_DOMAIN
 
 GIT_HEADER_REGEX = r'@@.*@@.*\n'
 MAX_CONTEXT_MARGIN = 100
+OPTIONAL_COMMENT = r'\s*(?:#.*)?'
+FUNCTION_CALL = r'\w+(?:\.\w+)*\s*\([^()]*\)'
+FUNCTION_CALL_WRAPPER = r'^[^#]*{function_call}.*$'
+FUNCTION_CALLING_LINE = FUNCTION_CALL_WRAPPER.format(function_call=FUNCTION_CALL)
+
+
+def get_function_call_match(line, function_regex=FUNCTION_CALLING_LINE):
+
+    # This is an approximation, it's too uncommon to have a def where a param cals a function...
+    if re.match('(\b|\s)*def\s+', line):
+        return None
+
+    match = re.match(function_regex, line)
+    if not match:
+        return None
+
+    # Check it's not inside a string, if there's an ood number of string symbols, so the string is 'open'
+    first_split = re.split(FUNCTION_CALL, line)[0]
+    is_in_string = first_split.count("'") % 2 or first_split.count('"') % 2
+    if is_in_string:
+        return None
+
+    return match
 
 
 class CodeFix(BaseModel):
@@ -157,7 +183,7 @@ class CodeEnvironment(BaseModel):
     local_vars: str
     error_line_number: int
     total_file_lines: int
-    code_definitions: List[str]
+    code_definitions: Dict[str, str]
 
 
 class Payload(BaseModel):
@@ -220,10 +246,9 @@ def get_last_scope_index(scope_error, analyzer, error_line_number):
 
 def missing_definition_with_regex(line):
     """Detects whether the line contains a class or method definition."""
-    optional_comment = r'\s*(#.*)?'
-    def_regex = rf'^\s*def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(.*\)\s*:{optional_comment}'
-    class_regex = rf'^\s*class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(\(.*\))?\s*:{optional_comment}'
-    decorator_regex = rf'^\s*@\w+(\([^)]*\))?{optional_comment}'
+    def_regex = rf'^\s*def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(.*\)\s*:{OPTIONAL_COMMENT}'
+    class_regex = rf'^\s*class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(\(.*\))?\s*:{OPTIONAL_COMMENT}'
+    decorator_regex = rf'^\s*@\w+(\([^)]*\))?{OPTIONAL_COMMENT}'
     def_match = re.match(def_regex, line)
     class_match = re.match(class_regex, line)
     decorator_match = re.match(decorator_regex, line)
@@ -270,21 +295,92 @@ def get_context_code_lines(error_line_number, file_lines, code):
     return file_lines[start_index: end_index], start_index, end_index
 
 
-def get_code_definitions(local_vars):
-    definitions = set()
-    for var in local_vars.values():
-        total_chars = sum([len(str(d)) for d in definitions])
+def is_user_module(module_name):
+    """User defined no builtin or third party module"""
+    if module_name is None:
+        return False
+    module = sys.modules.get(module_name)
+    if module is None:
+        return False
+    if not hasattr(module, '__file__') or module.__file__ is None:
+        return False
+    return in_my_code(module.__file__) and module_name != '__builtins__'
+
+
+def get_imported_modules(module: ModuleType):
+    return [obj for name, obj in module.__dict__.items() if isinstance(obj, ModuleType) and is_user_module(name)]
+
+
+def get_functions_from_module(module):
+    """Filter functions defined in this module"""
+    functions_tuple = inspect.getmembers(module, lambda obj: isinstance(obj, types.FunctionType))
+    return dict(functions_tuple)
+
+
+def get_user_defined_functions_from_frame(frame):
+
+    # Get the module associated with the input frame
+    module = inspect.getmodule(frame)
+    if not module:
+        return dict()
+
+    function_dict = get_functions_from_module(module)
+
+    # TODO: can do recursive imports? does it make computational sense?
+    for imported_module in get_imported_modules(module):
+        # Prepends name, to abel to use later on regex, and don't mix workspaces.
+        module_dict = {f'{imported_module.__name__}.{name}': func
+                       for name, func in get_functions_from_module(imported_module).items()}
+        function_dict = {**function_dict, **module_dict}
+    return function_dict
+
+
+def get_function_specific_regex(user_defined_functions):
+    """Matching several options of users defined functions. Needs to escape the names because some have dots."""
+    escaped_function_names = f"({'|'.join([re.escape(name) for name in user_defined_functions.keys()])})"
+    return FUNCTION_CALL_WRAPPER.format(function_call=escaped_function_names)
+
+
+def get_method_definitions(stacktrace, code_lines):
+    frame = stacktrace.tb_frame
+    user_defined_functions = get_user_defined_functions_from_frame(frame)
+    user_called_function_regex = get_function_specific_regex(user_defined_functions)
+
+    called_methods = dict()
+    for line in code_lines:
+        match = get_function_call_match(line, function_regex=user_called_function_regex)
+        if match:
+            matched_function = match.group(1)  # captures group to determine the matched function
+            called_methods[matched_function] = user_defined_functions[matched_function]
+
+    return {method_name: inspect.getsource(func) for method_name, func in called_methods.items()}
+
+
+def cut_definitions(definitions):
+    shortened_definitions = dict()
+    for name, definition in definitions.items():
+        total_chars = len(str(shortened_definitions))
         if total_chars > MAX_CHAR_WITH_BOUND:
             if DEBUG:
-                print(f'CHARS_LIMIT exceeded, {total_chars=} on get_code_definitions()')
+                print(f'CHARS_LIMIT exceeded, {total_chars=} on definitions')
             break
+        shortened_definitions[name] = definition
 
+    return shortened_definitions
+
+
+def get_instances_and_classes_definitions(local_vars):
+    definitions = dict()
+    for var in local_vars.values():
         try:
-            definitions.add(inspect.getsource(var.__class__))
+            if inspect.isclass(var):
+                definitions[var.__name__] = inspect.getsource(var)
+            else:
+                definitions[var.__class__.__name__] = inspect.getsource(var.__class__)
         except (TypeError, OSError):
             pass
 
-    return list(definitions)
+    return definitions
 
 
 def get_file_path(stacktrace):
@@ -295,6 +391,13 @@ def get_file_path(stacktrace):
 def get_local_vars(stacktrace):
     frame = stacktrace.tb_frame
     return frame.f_locals
+
+
+def get_definitions(local_vars, stacktrace, code_lines):
+    objects_definitions = get_instances_and_classes_definitions(local_vars)
+    methods_definitions = get_method_definitions(stacktrace, code_lines)
+    code_definitions = {**objects_definitions, **methods_definitions}
+    return cut_definitions(code_definitions)
 
 
 def get_environment(stacktrace, idx):
@@ -312,7 +415,7 @@ def get_environment(stacktrace, idx):
         code = code[:-1]
 
     local_vars = get_local_vars(stacktrace)
-    code_definitions = get_code_definitions(local_vars)
+    code_definitions = get_definitions(local_vars, stacktrace, code_lines)
 
     return CodeEnvironment(
         index=idx,
@@ -413,11 +516,11 @@ def get_solution(environments, temp_patch_file, exc):
 class Solution(BaseModel):
     not_found: bool = False
     diffs: List[str] = []
-    new_code: Optional[str]
-    file_path: Optional[str]
-    explanation: Optional[str]
-    stacktrace_str: Optional[str]
-    error: Optional[str]
+    new_code: str = None
+    file_path: str = None
+    explanation: str = None
+    stacktrace_str: str = None
+    error: str = None
 
 
 def get_candidate_solution(exc, temp_patch_file):
