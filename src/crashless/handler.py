@@ -15,6 +15,7 @@ from collections import defaultdict
 from pip._internal.operations import freeze
 
 import requests
+from halo import Halo
 from pydantic import BaseModel
 
 from crashless.cts import DEBUG, MAX_CHAR_WITH_BOUND, BACKEND_DOMAIN
@@ -55,13 +56,15 @@ class CodeFix(BaseModel):
 
 
 def get_code_fix(environments, stacktrace_str):
-    response = requests.post(
-        url=f'{BACKEND_DOMAIN}/crashless/get-crash-fix',
-        data=Payload(packages=list(freeze.freeze()),
-                     stacktrace_str=stacktrace_str,
-                     environments=environments).json(),
-        headers={'accept': 'application/json', 'accept-language': 'en'}
-    )
+    with Halo(text=get_str_with_color(f'Thinking possible solution', BColors.WARNING), spinner='dots'):
+        response = requests.post(
+            url=f'{BACKEND_DOMAIN}/crashless/get-crash-fix',
+            data=Payload(packages=list(freeze.freeze()),
+                         stacktrace_str=stacktrace_str,
+                         environments=environments).json(),
+            headers={'accept': 'application/json', 'accept-language': 'en'}
+        )
+
     if response.status_code != 200:
         return CodeFix(error=response.json().get('detail'))
 
@@ -133,8 +136,12 @@ def get_diffs_and_patch(old_code, new_code, code_environment, temp_patch_file):
         return []
 
 
+def get_str_with_color(line, color):
+    return f'{color}{line}{BColors.ENDC}'
+
+
 def print_with_color(line, color):
-    print(f'{color}{line}{BColors.ENDC}')
+    print(get_str_with_color(line, color))
 
 
 def print_diff(content):
@@ -156,7 +163,7 @@ def add_newline_every_n_chars(input_string, n_words=20):
 
 
 def ask_to_fix_code(solution, temp_patch_file):
-    print_with_color(f'The following code changes will be applied:', BColors.WARNING)
+    print_with_color(f'AI got an answer, the following code changes will be applied:', BColors.WARNING)
     for diff in solution.diffs:
         print_diff(diff)
 
@@ -400,6 +407,14 @@ def get_definitions(local_vars, stacktrace, code_lines):
     return cut_definitions(code_definitions)
 
 
+def get_local_vars_str(local_vars):
+    """Calling local vars can randomly raise an error"""
+    try:
+        return str(local_vars)
+    except Exception:
+        return ''
+
+
 def get_environment(stacktrace, idx):
     file_path = get_file_path(stacktrace)
     error_line_number = stacktrace.tb_lineno
@@ -424,7 +439,7 @@ def get_environment(stacktrace, idx):
         start_scope_index=start_scope_index,
         end_scope_index=end_scope_index,
         error_code_line=error_code_line,
-        local_vars=str(local_vars),
+        local_vars=get_local_vars_str(local_vars),
         error_line_number=error_line_number,
         total_file_lines=total_file_lines,
         code_definitions=code_definitions,
@@ -525,7 +540,6 @@ class Solution(BaseModel):
 
 def get_candidate_solution(exc, temp_patch_file):
     print_with_color("Crashless detected an error, let's fix it!", BColors.WARNING)
-    print_with_color("Loading possible solution...", BColors.WARNING)
     environments = get_environments(exc)
     return get_solution(environments, temp_patch_file, exc)
 
