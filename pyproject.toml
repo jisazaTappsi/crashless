@@ -12,6 +12,12 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+dependencies = [
+    "fastapi>=0.83.0",
+    "pydantic>=1.10.19",
+    "requests>=2.0.0",
+    "halo>=0.0.31",
+]
 
 [project.urls]
 Homepage = "https://github.com/jisazaTappsi/crashless"
