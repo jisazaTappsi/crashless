@@ -1,6 +1,6 @@
 from scope_sample_code import first_level_method
 from tests.scope_sample_code import FirstLevelClass
-from crashless.handler import get_environments, missing_definition_with_regex
+from crashless.handler import get_environments_and_defs, missing_definition_with_regex
 
 assert missing_definition_with_regex('def')
 assert missing_definition_with_regex('class')
@@ -15,7 +15,7 @@ assert not missing_definition_with_regex('@app.get("/crash")  # This endpoint ha
 try:
     first_level_method()
 except Exception as exc:
-    environments = get_environments(exc)
+    environments, _ = get_environments_and_defs(exc)
     sample_environment = environments[1]
     lines = sample_environment.code.split('\n')
     first_line = lines[0]
@@ -27,7 +27,7 @@ try:
     instance = FirstLevelClass()
     instance.method_inside_class()
 except Exception as exc:
-    environments = get_environments(exc)
+    environments, _ = get_environments_and_defs(exc)
     sample_environment = environments[1]
     lines = sample_environment.code.split('\n')
     first_line = lines[0]

@@ -18,6 +18,14 @@ def un_used_method():
     pass
 
 
+def starts_with_same_string():
+    pass
+
+
+def starts_with_same_string_but_is_a_lot_longer():
+    pass
+
+
 def my_scope():
     my_local_function1(1, 1)
     raise Exception
@@ -26,6 +34,9 @@ def my_scope():
     another_module.function_called_indirectly(1, 1)
     function_called_directly(1,1)
     list()  # built-in function
+
+    starts_with_same_string()
+    starts_with_same_string_but_is_a_lot_longer()
 
     if intricate_call():
         print('blah')
