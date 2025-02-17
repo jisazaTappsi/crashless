@@ -591,7 +591,7 @@ def get_solution(payload: Payload, temp_patch_file):
         )
 
     # there's no code
-    if code_fix.fixed_code is None:
+    if code_fix.fixed_code is None or code_fix.index is None:
         return Solution(
             not_found=False,
             file_path=code_fix.file_path,
