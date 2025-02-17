@@ -249,9 +249,11 @@ class ScopeAnalyzer(ast.NodeVisitor):
 
 def get_end_scope_index(scope_error, analyzer, error_line_number):
     """Outputs, zero based indexing"""
-    last_index = max([line for line, scope in analyzer.line_scopes.items() if scope == scope_error])
-    last_index = min(error_line_number + MAX_CONTEXT_MARGIN, last_index)  # hard limit on data amount
-    return max(last_index, 0)  # cannot be negative
+    end_index = max([line for line, scope in analyzer.line_scopes.items() if scope == scope_error])
+    end_index = min(error_line_number + MAX_CONTEXT_MARGIN, end_index)  # hard limit on data amount
+    end_index -= 1  # change from 1 based indexing to 0 based indexing
+
+    return max(end_index, 0)  # cannot be negative
 
 
 def missing_definition_with_regex(line):
@@ -385,7 +387,8 @@ def get_definition(name, obj):
     )
 
 
-def get_method_definitions_recursively(function_dict, code_lines, single_regex, double_regex):
+def get_method_definitions_recursively(function_dict, code_lines, single_regex, double_regex,
+                                       method_name_called_from=None):
     called_methods = dict()
     for line in code_lines:
         matched_functions = get_function_call_matches(line, single_regex, double_regex)
@@ -398,6 +401,10 @@ def get_method_definitions_recursively(function_dict, code_lines, single_regex, 
                 except KeyError:
                     pass
 
+    # removes the method it's been called from, to prevent infinite recursion when there's a
+    # recursion on the user code.
+    called_methods.pop(method_name_called_from, None)
+
     source_code_dict = dict()
     for method_name, func in called_methods.items():
         func_definition = get_definition(method_name, func)
@@ -405,7 +412,8 @@ def get_method_definitions_recursively(function_dict, code_lines, single_regex, 
         source_code_dict = {
             **source_code_dict,
             **get_method_definitions_recursively(function_dict, func_definition.code.split('\n'),
-                                                 single_regex=single_regex, double_regex=double_regex)
+                                                 single_regex=single_regex, double_regex=double_regex,
+                                                 method_name_called_from=method_name)
         }
 
     return source_code_dict
@@ -562,7 +570,7 @@ def get_new_code_and_diffs(code_fix, payload, temp_patch_file):
         file_lines = old_code.split('\n')
 
     lines_above = file_lines[:fixed_env_or_def.start_scope_index]
-    lines_below = file_lines[fixed_env_or_def.end_scope_index:]
+    lines_below = file_lines[fixed_env_or_def.end_scope_index+1:]  # cannot include end line.
     code_pieces = code_fix.fixed_code.split('\n')
     new_code = '\n'.join(lines_above + code_pieces + lines_below)
     diffs = get_diffs_and_patch(old_code, new_code, code_fix.file_path, temp_patch_file)
