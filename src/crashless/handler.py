@@ -84,12 +84,16 @@ class CodeFix(BaseModel):
 
 
 def get_code_fix(payload: Payload):
-    with Halo(text=get_str_with_color(f'Thinking possible solution', BColors.WARNING), spinner='dots'):
-        response = requests.post(
-            url=f'{BACKEND_DOMAIN}/crashless/get-crash-fix',
-            data=payload.json(),
-            headers={'accept': 'application/json', 'accept-language': 'en'}
-        )
+    request_params = {
+        'url': f'{BACKEND_DOMAIN}/crashless/get-crash-fix',
+        'data': payload.json(),
+        'headers': {'accept': 'application/json', 'accept-language': 'en'}
+    }
+    if DEBUG:
+        response = requests.post(**request_params)
+    else:
+        with Halo(text=get_str_with_color(f'Thinking possible solution', BColors.WARNING), spinner='dots'):
+            response = requests.post(**request_params)
 
     if response.status_code != 200:
         return CodeFix(error=f'Failed request with {response.status_code=} and detail={response.json().get("detail")}')
