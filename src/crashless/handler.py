@@ -10,7 +10,7 @@ import traceback
 import subprocess
 from io import BytesIO
 from types import ModuleType
-from typing import List, Dict
+from typing import List, Dict, Optional
 from collections import defaultdict
 from pip._internal.operations import freeze
 
@@ -23,50 +23,76 @@ from crashless.cts import DEBUG, MAX_CHAR_WITH_BOUND, BACKEND_DOMAIN
 GIT_HEADER_REGEX = r'@@.*@@.*\n'
 MAX_CONTEXT_MARGIN = 100
 OPTIONAL_COMMENT = r'\s*(?:#.*)?'
-FUNCTION_CALL = r'\w+(?:\.\w+)*\s*\([^()]*\)'
-FUNCTION_CALL_WRAPPER = r'^[^#]*{function_call}.*$'
-FUNCTION_CALLING_LINE = FUNCTION_CALL_WRAPPER.format(function_call=FUNCTION_CALL)
+FUNCTION_NAME = '\w+(?:\.\w+)*'
+FUNCTION_CALL = rf'{FUNCTION_NAME}\s*\('
+FUNCTION_CALL_WRAPPER = r'^[^#]*{function_name}\s*\(.*$'
+FUNCTION_CALLING_LINE = FUNCTION_CALL_WRAPPER.format(function_name=FUNCTION_NAME)
 
 
-def get_function_call_match(line, function_regex=FUNCTION_CALLING_LINE):
+class Code(BaseModel):
+    index: int = None
+    file_path: str
+    code: str
+    start_scope_index: int
+    end_scope_index: int
+
+
+class Environment(Code):
+    error_code_line: str
+    local_vars: str
+    error_line_number: int
+    total_file_lines: int
+    used_additional_definitions: List[str]
+
+
+class Definition(Code):
+    name: str
+
+
+class Payload(BaseModel):
+    packages: List[str]
+    stacktrace_str: str
+    environments: List[Environment]
+    additional_definitions: Dict[str, Definition]
+
+
+def get_function_call_matches(line, single_regex, double_regex):
 
     # This is an approximation, it's too uncommon to have a def where a param cals a function...
     if re.match('(\b|\s)*def\s+', line):
-        return None
+        return []
 
-    match = re.match(function_regex, line)
-    if not match:
-        return None
+    matches = re.findall(single_regex, line) + re.findall(double_regex, line)
+    if not matches:
+        return []
 
-    # Check it's not inside a string, if there's an ood number of string symbols, so the string is 'open'
+    # Check it's not inside a string, if there's an odd number of string symbols, so the string is 'open'
     first_split = re.split(FUNCTION_CALL, line)[0]
     is_in_string = first_split.count("'") % 2 or first_split.count('"') % 2
     if is_in_string:
-        return None
+        return []
 
-    return match
+    return matches
 
 
 class CodeFix(BaseModel):
-    index: int = None
+    index: Optional[int] = None
     file_path: str = None
     fixed_code: str = None
     explanation: str = None
     error: str = None
 
 
-def get_code_fix(environments, stacktrace_str):
+def get_code_fix(payload: Payload):
     with Halo(text=get_str_with_color(f'Thinking possible solution', BColors.WARNING), spinner='dots'):
         response = requests.post(
             url=f'{BACKEND_DOMAIN}/crashless/get-crash-fix',
-            data=Payload(packages=list(freeze.freeze()),
-                         stacktrace_str=stacktrace_str,
-                         environments=environments).json(),
+            data=payload.json(),
             headers={'accept': 'application/json', 'accept-language': 'en'}
         )
 
     if response.status_code != 200:
-        return CodeFix(error=response.json().get('detail'))
+        return CodeFix(error=f'Failed request with {response.status_code=} and detail={response.json().get("detail")}')
 
     json_response = response.json()
     return CodeFix(**json_response)
@@ -93,7 +119,7 @@ def get_git_path(absolute_path):
     return absolute_path.replace(get_git_root(), '')
 
 
-def get_diffs_and_patch(old_code, new_code, code_environment, temp_patch_file):
+def get_diffs_and_patch(old_code, new_code, file_path, temp_patch_file):
     with tempfile.NamedTemporaryFile(mode='w') as temp_old_file, tempfile.NamedTemporaryFile(mode='w') as temp_new_file:
         try:
             temp_old_file.write(old_code)
@@ -111,7 +137,7 @@ def get_diffs_and_patch(old_code, new_code, code_environment, temp_patch_file):
         subprocess.run(f'git diff --no-index {temp_old_file.name} {temp_new_file.name} > {temp_patch_file.name}',
                        capture_output=True, text=True, shell=True)
         patch_content = temp_patch_file.read()
-        git_path = get_git_path(code_environment.file_path)
+        git_path = get_git_path(file_path)
         patch_content = patch_content.replace(temp_old_file.name, git_path).replace(temp_new_file.name, git_path)
 
         # Move the pointer to the beginning
@@ -164,6 +190,7 @@ def add_newline_every_n_chars(input_string, n_words=20):
 
 def ask_to_fix_code(solution, temp_patch_file):
     print_with_color(f'AI got an answer, the following code changes will be applied:', BColors.WARNING)
+    print(f'In {solution.file_path}:')
     for diff in solution.diffs:
         print_diff(diff)
 
@@ -178,31 +205,6 @@ def ask_to_fix_code(solution, temp_patch_file):
         print_with_color('Code still has this pesky bug :(', BColors.WARNING)
 
     return solution
-
-
-class CodeEnvironment(BaseModel):
-    index: int
-    file_path: str
-    code: str
-    start_scope_index: int
-    end_scope_index: int
-    error_code_line: str
-    local_vars: str
-    error_line_number: int
-    total_file_lines: int
-    code_definitions: Dict[str, str]
-
-
-class Payload(BaseModel):
-    packages: List[str]
-    stacktrace_str: str
-    environments: List[CodeEnvironment]
-
-    def to_json(self):
-        environment_jsons = [e.to_json() for e in self.environments]
-        normal_json = self.json()
-        self.environments = environment_jsons
-        return self
 
 
 def get_code_lines(code):
@@ -245,10 +247,13 @@ class ScopeAnalyzer(ast.NodeVisitor):
         super().visit(node)
 
 
-def get_last_scope_index(scope_error, analyzer, error_line_number):
-    last_index = max([line for line, scope in analyzer.line_scopes.items() if scope == scope_error])
-    last_index = min(error_line_number + MAX_CONTEXT_MARGIN, last_index)  # hard limit on data amount
-    return max(last_index, 0)  # cannot be negative
+def get_end_scope_index(scope_error, analyzer, error_line_number):
+    """Outputs, zero based indexing"""
+    end_index = max([line for line, scope in analyzer.line_scopes.items() if scope == scope_error])
+    end_index = min(error_line_number + MAX_CONTEXT_MARGIN, end_index)  # hard limit on data amount
+    end_index -= 1  # change from 1 based indexing to 0 based indexing
+
+    return max(end_index, 0)  # cannot be negative
 
 
 def missing_definition_with_regex(line):
@@ -269,6 +274,7 @@ def missing_definition(first_index, lines):
 
 
 def get_start_scope_index(scope_error, analyzer, error_line_number, file_length, file_lines):
+    """Outputs, zero based indexing"""
     first_index = min([line for line, scope in analyzer.line_scopes.items() if scope == scope_error])
     first_index -= 1  # change from 1 based indexing to 0 based indexing
 
@@ -295,9 +301,9 @@ def get_context_code_lines(error_line_number, file_lines, code):
                                         error_line_number=error_line_number,
                                         file_length=len(file_lines),
                                         file_lines=file_lines)
-    end_index = get_last_scope_index(scope_error=scope_error,
-                                     analyzer=analyzer,
-                                     error_line_number=error_line_number)
+    end_index = get_end_scope_index(scope_error=scope_error,
+                                    analyzer=analyzer,
+                                    error_line_number=error_line_number)
 
     return file_lines[start_index: end_index], start_index, end_index
 
@@ -311,7 +317,7 @@ def is_user_module(module_name):
         return False
     if not hasattr(module, '__file__') or module.__file__ is None:
         return False
-    return in_my_code(module.__file__) and module_name != '__builtins__'
+    return path_is_in_user_code(module.__file__) and module_name != '__builtins__'
 
 
 def get_imported_modules(module: ModuleType):
@@ -320,8 +326,24 @@ def get_imported_modules(module: ModuleType):
 
 def get_functions_from_module(module):
     """Filter functions defined in this module"""
-    functions_tuple = inspect.getmembers(module, lambda obj: isinstance(obj, types.FunctionType))
-    return dict(functions_tuple)
+    function_tuples = inspect.getmembers(module, lambda obj: isinstance(obj, types.FunctionType))
+    return {name: func for name, func in function_tuples if path_is_in_user_code(inspect.getfile(func))}
+
+
+def get_functions_from_module_recursively(module, base_module=False):
+    # TODO: what happens with direct imports, ie from module_x import my_function
+
+    # my local functions
+    module_dict = get_functions_from_module(module)
+    if not base_module:  # Prepends name, to be able to use later on regex, and don't mix workspaces.
+        module_dict = {**module_dict, **{f'{module.__name__}.{name}': func for name, func in module_dict.items()}}
+
+    for imported_module in get_imported_modules(module):
+        # Prepends name, to abel to use later on regex, and don't mix workspaces.
+        imported_module_dict = get_functions_from_module_recursively(imported_module)
+        module_dict = {**module_dict, **imported_module_dict}
+
+    return module_dict
 
 
 def get_user_defined_functions_from_frame(frame):
@@ -331,42 +353,87 @@ def get_user_defined_functions_from_frame(frame):
     if not module:
         return dict()
 
-    function_dict = get_functions_from_module(module)
-
-    # TODO: can do recursive imports? does it make computational sense?
-    for imported_module in get_imported_modules(module):
-        # Prepends name, to abel to use later on regex, and don't mix workspaces.
-        module_dict = {f'{imported_module.__name__}.{name}': func
-                       for name, func in get_functions_from_module(imported_module).items()}
-        function_dict = {**function_dict, **module_dict}
-    return function_dict
+    return get_functions_from_module_recursively(module, base_module=True)
 
 
-def get_function_specific_regex(user_defined_functions):
+def get_function_specific_regex(functions):
     """Matching several options of users defined functions. Needs to escape the names because some have dots."""
-    escaped_function_names = f"({'|'.join([re.escape(name) for name in user_defined_functions.keys()])})"
-    return FUNCTION_CALL_WRAPPER.format(function_call=escaped_function_names)
+    # having parenthesis produces a capturing group.
+    escaped_function_names = f"({'|'.join([re.escape(name) for name in functions])})"
+    return FUNCTION_CALL_WRAPPER.format(function_name=escaped_function_names)
+
+
+def get_function_regexes(function_dict):
+    single_functions = [name for name, _ in function_dict.items() if '.' not in name]
+    double_functions = [name for name, _ in function_dict.items() if '.' in name]
+    return get_function_specific_regex(single_functions), get_function_specific_regex(double_functions)
+
+
+def get_definition(name, obj):
+    source_lines, start_line = inspect.getsourcelines(obj)
+    start_line -= 1  # zero based indexing
+    end_line = start_line + len(source_lines) - 1
+    source_code = ''.join(source_lines)  # \n already in the lines
+
+    if source_code[-1] == '\n':  # prevent a last \n from introducing a fake extra line.
+        source_code = source_code[:-1]
+
+    return Definition(
+        name=name,
+        code=source_code,
+        file_path=inspect.getfile(obj),
+        start_scope_index=start_line,
+        end_scope_index=end_line,
+    )
+
+
+def get_method_definitions_recursively(function_dict, code_lines, single_regex, double_regex,
+                                       method_name_called_from=None):
+    called_methods = dict()
+    for line in code_lines:
+        matched_functions = get_function_call_matches(line, single_regex, double_regex)
+        for matched_function in matched_functions:
+            try:  # Tries module import, ie module.function
+                called_methods[matched_function] = function_dict[matched_function]
+            except KeyError:
+                try:  # Tries function import
+                    called_methods[matched_function] = function_dict[matched_function.split('.')[-1]]
+                except KeyError:
+                    pass
+
+    # removes the method it's been called from, to prevent infinite recursion when there's a
+    # recursion on the user code.
+    called_methods.pop(method_name_called_from, None)
+
+    source_code_dict = dict()
+    for method_name, func in called_methods.items():
+        func_definition = get_definition(method_name, func)
+        source_code_dict[method_name] = func_definition
+        source_code_dict = {
+            **source_code_dict,
+            **get_method_definitions_recursively(function_dict, func_definition.code.split('\n'),
+                                                 single_regex=single_regex, double_regex=double_regex,
+                                                 method_name_called_from=method_name)
+        }
+
+    return source_code_dict
 
 
 def get_method_definitions(stacktrace, code_lines):
     frame = stacktrace.tb_frame
-    user_defined_functions = get_user_defined_functions_from_frame(frame)
-    user_called_function_regex = get_function_specific_regex(user_defined_functions)
+    function_dict = get_user_defined_functions_from_frame(frame)
+    single_regex, double_regex = get_function_regexes(function_dict)
+    return get_method_definitions_recursively(function_dict, code_lines, single_regex, double_regex)
 
-    called_methods = dict()
-    for line in code_lines:
-        match = get_function_call_match(line, function_regex=user_called_function_regex)
-        if match:
-            matched_function = match.group(1)  # captures group to determine the matched function
-            called_methods[matched_function] = user_defined_functions[matched_function]
 
-    return {method_name: inspect.getsource(func) for method_name, func in called_methods.items()}
+def get_length_of_dict(my_dict):
+    return len(str(my_dict))
 
 
 def cut_definitions(definitions):
     shortened_definitions = dict()
     for name, definition in definitions.items():
-        total_chars = len(str(shortened_definitions))
+        total_chars = get_length_of_dict(shortened_definitions)
         if total_chars > MAX_CHAR_WITH_BOUND:
             if DEBUG:
                 print(f'CHARS_LIMIT exceeded, {total_chars=} on definitions')
@@ -377,13 +444,14 @@ def cut_definitions(definitions):
 
 
 def get_instances_and_classes_definitions(local_vars):
+    # TODO: find definitions recursively
     definitions = dict()
     for var in local_vars.values():
         try:
-            if inspect.isclass(var):
-                definitions[var.__name__] = inspect.getsource(var)
-            else:
-                definitions[var.__class__.__name__] = inspect.getsource(var.__class__)
+            the_class = var if inspect.isclass(var) else var.__class__
+            if path_is_in_user_code(inspect.getfile(the_class)):
+                class_name = the_class.__name__
+                definitions[class_name] = get_definition(class_name, the_class)
         except (TypeError, OSError):
             pass
 
@@ -403,19 +471,23 @@ def get_local_vars(stacktrace):
 def get_definitions(local_vars, stacktrace, code_lines):
     objects_definitions = get_instances_and_classes_definitions(local_vars)
     methods_definitions = get_method_definitions(stacktrace, code_lines)
-    code_definitions = {**objects_definitions, **methods_definitions}
-    return cut_definitions(code_definitions)
+    additional_definitions = {**objects_definitions, **methods_definitions}
+    return cut_definitions(additional_definitions)
 
 
 def get_local_vars_str(local_vars):
     """Calling local vars can randomly raise an error"""
-    try:
-        return str(local_vars)
-    except Exception:
-        return ''
+    var_dict = {}
+    for name in local_vars.keys():  # cannot call item here cause will explode if a local variable has an exception.
+        try:
+            # Can only call the value inside the try except.
+            var_dict[name] = str(local_vars[name])
+        except Exception:
+            pass
+    return str(var_dict)
 
 
-def get_environment(stacktrace, idx):
+def get_environment_and_defs(stacktrace, idx):
     file_path = get_file_path(stacktrace)
     error_line_number = stacktrace.tb_lineno
     with open(file_path, 'r') as file_code:
@@ -430,9 +502,9 @@ def get_environment(stacktrace, idx):
         code = code[:-1]
 
     local_vars = get_local_vars(stacktrace)
-    code_definitions = get_definitions(local_vars, stacktrace, code_lines)
+    additional_definitions = get_definitions(local_vars, stacktrace, code_lines)
 
-    return CodeEnvironment(
+    environment = Environment(
         index=idx,
         file_path=file_path,
         code=code,
@@ -442,11 +514,12 @@ def get_environment(stacktrace, idx):
         local_vars=get_local_vars_str(local_vars),
         error_line_number=error_line_number,
         total_file_lines=total_file_lines,
-        code_definitions=code_definitions,
+        used_additional_definitions=list(additional_definitions.keys()),
     )
+    return environment, additional_definitions
 
 
-def in_my_code(file_path):
+def path_is_in_user_code(file_path):
     not_in_packages = "site-packages" not in file_path and "lib/python" not in file_path
     in_project_dir = os.getcwd() in file_path
     return not_in_packages and in_project_dir
@@ -456,7 +529,7 @@ def get_stacktrace(exc):
     return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
 
 
-def get_environments(exc):
+def get_environments_and_defs(exc):
     # Find lowest non-lib level
     levels = []
     stacktrace_level = exc.__traceback__
@@ -465,17 +538,47 @@ def get_environments(exc):
             break
 
         file_path = get_file_path(stacktrace_level)
-        if in_my_code(file_path):
+        if path_is_in_user_code(file_path):
             levels.append(stacktrace_level)
 
         stacktrace_level = stacktrace_level.tb_next  # Move to the next level in the stack trace
 
-    return [get_environment(level, idx) for idx, level in enumerate(levels)]
+    environments = []
+    all_definitions = dict()
+    for idx, level in enumerate(levels):
+        environment, definitions = get_environment_and_defs(level, idx)
+        environments.append(environment)
+        all_definitions = {**all_definitions, **definitions}
+    return environments, all_definitions
 
 
-def get_solution(environments, temp_patch_file, exc):
-    stacktrace_str = get_stacktrace(exc)
-    code_fix = get_code_fix(environments, stacktrace_str)
+def environment_or_definition(index, payload):
+    possibilities = payload.environments + [d for d in list(payload.additional_definitions.values())]
+    try:
+        return [e_d for e_d in possibilities if e_d.index == index][0]
+    except IndexError:
+        return None
+
+
+def get_new_code_and_diffs(code_fix, payload, temp_patch_file):
+    if code_fix.index is None:
+        return None, []
+
+    fixed_env_or_def = environment_or_definition(code_fix.index, payload)
+    with open(code_fix.file_path, "r") as file_code:
+        old_code = file_code.read()
+        file_lines = old_code.split('\n')
+
+    lines_above = file_lines[:fixed_env_or_def.start_scope_index]
+    lines_below = file_lines[fixed_env_or_def.end_scope_index+1:]  # cannot include end line.
+    code_pieces = code_fix.fixed_code.split('\n')
+    new_code = '\n'.join(lines_above + code_pieces + lines_below)
+    diffs = get_diffs_and_patch(old_code, new_code, code_fix.file_path, temp_patch_file)
+    return new_code, diffs
+
+
+def get_solution(payload: Payload, temp_patch_file):
+    code_fix = get_code_fix(payload)
     explanation = code_fix.explanation
 
     # there's nothing
@@ -483,7 +586,7 @@ def get_solution(environments, temp_patch_file, exc):
         return Solution(
             not_found=True,
             file_path=code_fix.file_path,
-            stacktrace_str=stacktrace_str,
+            stacktrace_str=payload.stacktrace_str,
             error=code_fix.error,
         )
 
@@ -493,37 +596,17 @@ def get_solution(environments, temp_patch_file, exc):
             not_found=False,
             file_path=code_fix.file_path,
             explanation=explanation,
-            stacktrace_str=stacktrace_str,
+            stacktrace_str=payload.stacktrace_str,
             error=code_fix.error,
         )
 
-    code_pieces = code_fix.fixed_code.split('\n')
-
-    with open(code_fix.file_path, "r") as file_code:
-        old_code = file_code.read()
-        file_lines = old_code.split('\n')
-
-    if code_fix.index is None:
-        new_code = None
-        fixed_environment = None
-    else:
-        fixed_environment = environments[code_fix.index]
-        lines_above = file_lines[:fixed_environment.start_scope_index]
-        lines_below = file_lines[fixed_environment.end_scope_index:]
-        new_code = '\n'.join(lines_above + code_pieces + lines_below)
-
-
-    if new_code is None:
-        diffs = []
-    else:
-        diffs = get_diffs_and_patch(old_code, new_code, fixed_environment, temp_patch_file)
-
+    new_code, diffs = get_new_code_and_diffs(code_fix, payload, temp_patch_file)
     return Solution(
         diffs=diffs,
         new_code=new_code,
-        file_path=fixed_environment.file_path if fixed_environment else None,
+        file_path=code_fix.file_path,
         explanation=explanation,
-        stacktrace_str=stacktrace_str,
+        stacktrace_str=payload.stacktrace_str,
         error=code_fix.error,
     )
 
@@ -540,8 +623,21 @@ class Solution(BaseModel):
 
 def get_candidate_solution(exc, temp_patch_file):
     print_with_color("Crashless detected an error, let's fix it!", BColors.WARNING)
-    environments = get_environments(exc)
-    return get_solution(environments, temp_patch_file, exc)
+    environments, additional_definitions = get_environments_and_defs(exc)
+    max_index = max([e.index for e in environments])
+
+    for idx, (name, defi) in enumerate(additional_definitions.items()):
+        defi.index = max_index + idx + 1
+        additional_definitions[name] = defi
+
+    stacktrace_str = get_stacktrace(exc)
+    payload = Payload(
+        packages=list(freeze.freeze()),
+        stacktrace_str=stacktrace_str,
+        environments=environments,
+        additional_definitions=additional_definitions
+    )
+    return get_solution(payload, temp_patch_file)
 
 
 def get_content_message(exc):
@@ -553,6 +649,7 @@ def get_content_message(exc):
 
 def threaded_function(exc):
     with tempfile.NamedTemporaryFile(mode='r+') as temp_patch_file:
+        temp_patch_file.flush()  # makes sure that contents are written to file
         solution = get_candidate_solution(exc, temp_patch_file)
 
         if solution.error:  # No changes but with explanation.
