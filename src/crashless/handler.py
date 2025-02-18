@@ -628,11 +628,12 @@ class Solution(BaseModel):
 def get_candidate_solution(exc, temp_patch_file):
     print_with_color("Crashless detected an error, let's fix it!", BColors.WARNING)
     environments, additional_definitions = get_environments_and_defs(exc)
-    max_index = max([e.index for e in environments])
 
-    for idx, (name, defi) in enumerate(additional_definitions.items()):
-        defi.index = max_index + idx + 1
-        additional_definitions[name] = defi
+    if environments:  # needs at least 1 environment
+        max_index = max([e.index for e in environments])
+        for idx, (name, defi) in enumerate(additional_definitions.items()):
+            defi.index = max_index + idx + 1
+            additional_definitions[name] = defi
 
     stacktrace_str = get_stacktrace(exc)
     payload = Payload(
