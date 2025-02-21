@@ -120,7 +120,13 @@ def get_git_root():
 
 
 def get_git_path(absolute_path):
-    return absolute_path.replace(get_git_root(), '')
+    root_of_git = get_git_root()
+    if root_of_git:  # There's a git repo on the path.
+        # Removes the absolute path part, and uses relatives paths to that .git file.
+        return absolute_path.replace(root_of_git, '')
+    else:
+        # There's no .git on the path, will use absolute paths.
+        return f'/{absolute_path}'  # Needs to add a / to read the absolute path
 
 
 def get_diffs_and_patch(old_code, new_code, file_path, temp_patch_file):
@@ -145,15 +151,12 @@ def get_diffs_and_patch(old_code, new_code, file_path, temp_patch_file):
         patch_content = patch_content.replace(temp_old_file.name, git_path).replace(temp_new_file.name, git_path)
 
         # Move the pointer to the beginning
-        # patch_file.seek(0)
         temp_patch_file.seek(0)
 
         # Write the modified content
-        # patch_file.write(patch_content)
         temp_patch_file.write(patch_content)
 
         # Truncate the remaining part of the file
-        # patch_file.truncate()
         temp_patch_file.truncate()
 
         # Removes header with the context to get only the code resulting from the "git diff".
@@ -204,7 +207,10 @@ def ask_to_fix_code(solution, temp_patch_file):
     if apply_changes:
         print_with_color('Please wait while changes are deployed...', BColors.WARNING)
         print_with_color("On PyCharm reload file with: Ctrl+Alt+Y, on mac: option+command+Y", BColors.WARNING)
-        result = subprocess.run(["git", "apply", temp_patch_file.name], capture_output=True, text=True)
+
+        # Uses unsafe-paths option to be able to modify when provided absolute paths.
+        result = subprocess.run(["git", "apply", temp_patch_file.name, '--unsafe-paths'],
+                                capture_output=True, text=True)
 
         if result.returncode == 0:
             print_with_color("Changes have been deployed :)", BColors.OKGREEN)
