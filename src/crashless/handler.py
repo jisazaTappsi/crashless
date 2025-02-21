@@ -199,12 +199,18 @@ def ask_to_fix_code(solution, temp_patch_file):
         print_diff(diff)
 
     print_with_color(f'Explanation: {add_newline_every_n_chars(solution.explanation)}', BColors.OKBLUE)
-    apply_changes = True if input('Apply changes(y/n)?: ') == 'y' else False
+    user_input = input('Apply changes(Y/n)?: ')
+    apply_changes = user_input in ('Y', '')
     if apply_changes:
         print_with_color('Please wait while changes are deployed...', BColors.WARNING)
         print_with_color("On PyCharm reload file with: Ctrl+Alt+Y, on mac: option+command+Y", BColors.WARNING)
-        subprocess.run(f'git apply {temp_patch_file.name}', capture_output=True, text=True, shell=True)
-        print_with_color("Changes have been deployed :)", BColors.OKGREEN)
+        result = subprocess.run(["git", "apply", temp_patch_file.name], capture_output=True, text=True)
+
+        if result.returncode == 0:
+            print_with_color("Changes have been deployed :)", BColors.OKGREEN)
+        else:
+            error_message = result.stderr.strip() or "Unknown error occurred"
+            print_with_color(error_message, BColors.FAIL)
     else:
         print_with_color('Code still has this pesky bug :(', BColors.WARNING)
 
@@ -309,23 +315,22 @@ def get_context_code_lines(error_line_number, file_lines, code):
                                     analyzer=analyzer,
                                     error_line_number=error_line_number)
 
-    return file_lines[start_index: end_index], start_index, end_index
+    including_last_line_index = end_index + 1
+    return file_lines[start_index: including_last_line_index], start_index, end_index
 
 
-def is_user_module(module_name):
+def is_user_module(module):
     """User defined no builtin or third party module"""
-    if module_name is None:
-        return False
-    module = sys.modules.get(module_name)
     if module is None:
         return False
     if not hasattr(module, '__file__') or module.__file__ is None:
         return False
-    return path_is_in_user_code(module.__file__) and module_name != '__builtins__'
+
+    return path_is_in_user_code(module.__file__) and module.__name__ != '__builtins__'
 
 
 def get_imported_modules(module: ModuleType):
-    return [obj for name, obj in module.__dict__.items() if isinstance(obj, ModuleType) and is_user_module(name)]
+    return [obj for name, obj in module.__dict__.items() if isinstance(obj, ModuleType) and is_user_module(obj)]
 
 
 def get_functions_from_module(module):
@@ -334,7 +339,8 @@ def get_functions_from_module(module):
     return {name: func for name, func in function_tuples if path_is_in_user_code(inspect.getfile(func))}
 
 
-def get_functions_from_module_recursively(module, base_module=False):
+def get_functions_from_module_recursively(module, scrapped_module_names=[], base_module=False):
+    """This recursion is efficient by storing what's already scrapped and not repeating."""
     # TODO: what happens with direct imports, ie from module_x import my_function
 
     # my local functions
@@ -342,12 +348,19 @@ def get_functions_from_module_recursively(module, base_module=False):
     if not base_module:  # Prepends name, to be able to use later on regex, and don't mix workspaces.
         module_dict = {**module_dict, **{f'{module.__name__}.{name}': func for name, func in module_dict.items()}}
 
-    for imported_module in get_imported_modules(module):
+    # Stores what's scrapped already so it won't repeat
+    scrapped_module_names.append(module.__name__)
+
+    imported_modules = get_imported_modules(module)
+    imported_modules = [imported_module for imported_module in imported_modules
+                        if imported_module.__name__ not in scrapped_module_names]
+    for imported_module in imported_modules:
         # Prepends name, to abel to use later on regex, and don't mix workspaces.
-        imported_module_dict = get_functions_from_module_recursively(imported_module)
+        imported_module_dict, scrapped_module_names = get_functions_from_module_recursively(imported_module,
+                                                                                            scrapped_module_names)
         module_dict = {**module_dict, **imported_module_dict}
 
-    return module_dict
+    return module_dict, scrapped_module_names
 
 
 def get_user_defined_functions_from_frame(frame):
@@ -357,7 +370,8 @@ def get_user_defined_functions_from_frame(frame):
     if not module:
         return dict()
 
-    return get_functions_from_module_recursively(module, base_module=True)
+    module_dict, scrapped_module_names = get_functions_from_module_recursively(module, base_module=True)
+    return module_dict
 
 
 def get_function_specific_regex(functions):
@@ -574,7 +588,7 @@ def get_new_code_and_diffs(code_fix, payload, temp_patch_file):
         file_lines = old_code.split('\n')
 
     lines_above = file_lines[:fixed_env_or_def.start_scope_index]
-    lines_below = file_lines[fixed_env_or_def.end_scope_index+1:]  # cannot include end line.
+    lines_below = file_lines[fixed_env_or_def.end_scope_index + 1:]  # cannot include end line.
     code_pieces = code_fix.fixed_code.split('\n')
     new_code = '\n'.join(lines_above + code_pieces + lines_below)
     diffs = get_diffs_and_patch(old_code, new_code, code_fix.file_path, temp_patch_file)
