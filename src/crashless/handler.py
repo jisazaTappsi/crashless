@@ -115,7 +115,10 @@ class BColors:
 
 
 def get_git_root():
-    result = subprocess.run('git rev-parse --show-toplevel', capture_output=True, text=True, shell=True)
+    result = subprocess.run(["git", "rev-parse", '--show-toplevel'], capture_output=True, text=True)
+    if result.returncode != 0:
+        print_error(result)
+
     return result.stdout.strip()
 
 
@@ -141,12 +144,13 @@ def get_diffs_and_patch(old_code, new_code, file_path, temp_patch_file):
         temp_new_file.flush()
 
         # Run "git diff" comparing temporary files.
-        result = subprocess.run(f'git diff --no-index {temp_old_file.name} {temp_new_file.name}',
-                                capture_output=True, text=True, shell=True)
+        result_diff = subprocess.run(["git", "diff", '--no-index', temp_old_file.name, temp_new_file.name],
+                                capture_output=True, text=True)
+        # Codes for actual errors are >= 2, while 0 and 1 are success with no diff and diff respectively.
+        if result_diff.returncode >= 2:
+            print_error(result_diff)
 
-        subprocess.run(f'git diff --no-index {temp_old_file.name} {temp_new_file.name} > {temp_patch_file.name}',
-                       capture_output=True, text=True, shell=True)
-        patch_content = temp_patch_file.read()
+        patch_content = result_diff.stdout
         git_path = get_git_path(file_path)
         patch_content = patch_content.replace(temp_old_file.name, git_path).replace(temp_new_file.name, git_path)
 
@@ -160,8 +164,7 @@ def get_diffs_and_patch(old_code, new_code, file_path, temp_patch_file):
         temp_patch_file.truncate()
 
         # Removes header with the context to get only the code resulting from the "git diff".
-        result_str = result.stdout
-        diff_content = re.split(GIT_HEADER_REGEX, result_str)
+        diff_content = re.split(GIT_HEADER_REGEX, patch_content)
 
     try:
         return diff_content[1:]  # returns a list of changes in different parts.
@@ -175,6 +178,11 @@ def get_str_with_color(line, color):
 
 def print_with_color(line, color):
     print(get_str_with_color(line, color))
+
+
+def print_error(result):
+    error_message = result.stderr.strip() or "Unknown error occurred"
+    print_with_color(error_message, BColors.FAIL)
 
 
 def print_diff(content):
@@ -215,8 +223,7 @@ def ask_to_fix_code(solution, temp_patch_file):
         if result.returncode == 0:
             print_with_color("Changes have been deployed :)", BColors.OKGREEN)
         else:
-            error_message = result.stderr.strip() or "Unknown error occurred"
-            print_with_color(error_message, BColors.FAIL)
+            print_error(result)
     else:
         print_with_color('Code still has this pesky bug :(', BColors.WARNING)
 
