@@ -1,7 +1,7 @@
 import os
 import re
 import ast
-import sys
+import time
 import types
 import inspect
 import tokenize
@@ -203,8 +203,9 @@ def add_newline_every_n_chars(input_string, n_words=20):
     return '\n'.join(' '.join(words[i:i + n_words]) for i in range(0, len(words), n_words))
 
 
-def ask_to_fix_code(solution, temp_patch_file):
-    print_with_color(f'AI got an answer, the following code changes will be applied:', BColors.WARNING)
+def ask_to_fix_code(solution, temp_patch_file, start_time):
+    time_taken = round(time.time() - start_time, 1)
+    print_with_color(f'AI got an answer in {time_taken}s, the following code changes will be applied:', BColors.WARNING)
     print(f'In {solution.file_path}:')
     for diff in solution.diffs:
         print_diff(diff)
@@ -353,7 +354,7 @@ def get_functions_from_module(module):
 
 
 def get_functions_from_module_recursively(module, scrapped_module_names=[], base_module=False):
-    """This recursion is efficient by storing what's already scrapped and not repeating."""
+    """This recursion is efficient by storing what's already scrapped and not repeating (ie scrapped_module_names)."""
     # TODO: what happens with direct imports, ie from module_x import my_function
 
     # my local functions
@@ -418,8 +419,7 @@ def get_definition(name, obj):
     )
 
 
-def get_method_definitions_recursively(function_dict, code_lines, single_regex, double_regex,
-                                       method_name_called_from=None):
+def get_called_methods(function_dict, code_lines, single_regex, double_regex):
     called_methods = dict()
     for line in code_lines:
         matched_functions = get_function_call_matches(line, single_regex, double_regex)
@@ -432,29 +432,49 @@ def get_method_definitions_recursively(function_dict, code_lines, single_regex, 
                 except KeyError:
                     pass
 
-    # removes the method it's been called from, to prevent infinite recursion when there's a
-    # recursion on the user code.
-    called_methods.pop(method_name_called_from, None)
+    return called_methods
+
+
+def get_method_definitions_recursively(function_dict, code_lines, single_regex, double_regex,
+                                       method_name_called_from=None, scrapped_function_names=[]):
+    """Recursive method with scrapped_function_names to prevent large recursions """
+
+    # Adds the method_name, to the list of scrapped_function_names so that it will never repeat the scrapping.
+    if method_name_called_from:
+        scrapped_function_names.append(method_name_called_from)
+
+    called_methods = get_called_methods(function_dict, code_lines, single_regex, double_regex)
+
+    # Filters what's already scrapped, so the recursion is much smaller.
+    called_methods = {method_name: func for method_name, func in called_methods.items()
+                      if method_name not in scrapped_function_names}
 
     source_code_dict = dict()
     for method_name, func in called_methods.items():
         func_definition = get_definition(method_name, func)
         source_code_dict[method_name] = func_definition
-        source_code_dict = {
-            **source_code_dict,
-            **get_method_definitions_recursively(function_dict, func_definition.code.split('\n'),
-                                                 single_regex=single_regex, double_regex=double_regex,
-                                                 method_name_called_from=method_name)
-        }
 
-    return source_code_dict
+        # Adds new functions to scrapped_function_names so it will be efficient scrapping.
+        new_source_code_dict, scrapped_function_names = \
+            get_method_definitions_recursively(
+                function_dict=function_dict,
+                code_lines=func_definition.code.split('\n'),
+                single_regex=single_regex,
+                double_regex=double_regex,
+                method_name_called_from=method_name,
+                scrapped_function_names=scrapped_function_names
+        )
+        source_code_dict = {**source_code_dict, **new_source_code_dict}
+
+    return source_code_dict, scrapped_function_names
 
 
 def get_method_definitions(stacktrace, code_lines):
     frame = stacktrace.tb_frame
     function_dict = get_user_defined_functions_from_frame(frame)
     single_regex, double_regex = get_function_regexes(function_dict)
-    return get_method_definitions_recursively(function_dict, code_lines, single_regex, double_regex)
+    source_code_dict, _ = get_method_definitions_recursively(function_dict, code_lines, single_regex, double_regex)
+    return source_code_dict
 
 
 def get_length_of_dict(my_dict):
@@ -680,6 +700,7 @@ def get_content_message(exc):
 
 
 def threaded_function(exc):
+    start_time = time.time()
     with tempfile.NamedTemporaryFile(mode='r+') as temp_patch_file:
         temp_patch_file.flush()  # makes sure that contents are written to file
         solution = get_candidate_solution(exc, temp_patch_file)
@@ -698,4 +719,4 @@ def threaded_function(exc):
             print_with_color(f'Explanation: {add_newline_every_n_chars(solution.explanation)}', BColors.OKBLUE)
             return
 
-        ask_to_fix_code(solution, temp_patch_file)
+        ask_to_fix_code(solution, temp_patch_file, start_time)

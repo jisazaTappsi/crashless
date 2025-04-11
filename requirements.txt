@@ -2,3 +2,4 @@ fastapi>=0.83.0
 pydantic>=1.10.19
 requests>=2.0.0
 halo>=0.0.31
+rich>=13.9.4

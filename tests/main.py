@@ -21,6 +21,7 @@ class User(BaseModel):
 def sum_users_squared_ages(user1, user2):
     age1 = user1.get_squared_age()
     age2 = user2.get_squared_age()
+
     return age1 + age2
 
 

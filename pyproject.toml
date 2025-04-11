@@ -1,6 +1,6 @@
 [project]
 name = "crashless"
-version = "0.0.19"
+version = "0.1.0"
 authors = [
   { name="Juan Isaza", email="biosolardecolombia@gmail.com" },
 ]
