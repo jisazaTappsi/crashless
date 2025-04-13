@@ -1,7 +1,7 @@
 import os
 
 DEBUG = bool(int(os.environ.get("CRASHLESS_DEBUG", 0)))
-BACKEND_DOMAIN = 'http://localhost:8000' if DEBUG else 'https://api.peaku.io'
+BACKEND_DOMAIN = 'http://localhost:8000' if DEBUG else 'https://api.peaku.co'
 
 AVG_CHARS_PER_WORD = 5 + 1  # this includes 1 space per word.
 SAFETY_FACTOR = 1.35

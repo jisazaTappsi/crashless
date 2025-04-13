@@ -1,5 +1,6 @@
 import io
 import pytest
+import subprocess
 
 import typer
 from enum import Enum
@@ -38,7 +39,7 @@ def get_app(main_path):
     return main_module.app
 
 
-def run_pytest_and_capture_output(args=None):
+def run_pytest_and_capture_output(test_path):
     """Runs pytest.main() with given arguments and captures stdout and stderr."""
     old_stdout = sys.stdout
     old_stderr = sys.stderr
@@ -47,11 +48,33 @@ def run_pytest_and_capture_output(args=None):
     sys.stdout = redirected_output
     sys.stderr = redirected_error
     try:
-        pytest.main(args)
+        exit_code = pytest.main([test_path, '-q'])
     finally:
         sys.stdout = old_stdout
         sys.stderr = old_stderr
-    return redirected_output.getvalue(), redirected_error.getvalue()
+    return exit_code > 0, redirected_output.getvalue(), redirected_error.getvalue()
+
+
+def run_pytest_on_terminal(test_path):
+    """Runs pytest as a isolated environment to prevent pytest caching after changing tests"""
+    result = subprocess.run([sys.executable, "-m", "pytest", test_path, '-q'], capture_output=True, text=True)
+    return result.returncode > 0, result.stdout, result.stderr
+
+
+def build_and_run_tests(method, endpoint, app, pytest_on_terminal=False, last_stdout=None, last_stderr=None):
+    rich_print(f"building integration test for {endpoint}")
+    test_case_str = fetch_integration_tests(method, endpoint, app, last_stdout=last_stdout, last_stderr=last_stderr)
+    test_path = write_to_file(test_case_str, method, endpoint, app)
+    rich_print(f'Successfully build integration test, check it out: {test_path}')
+    if pytest_on_terminal:
+        tests_failed, stdout, stderr = run_pytest_on_terminal(test_path)
+    else:
+        tests_failed, stdout, stderr = run_pytest_and_capture_output(test_path)
+    print("Captured Standard Output:")
+    print(stdout)
+    print("\nCaptured Standard Error:")
+    print(stderr)
+    return tests_failed, stdout, stderr
 
 
 @typer_app.command()
@@ -61,15 +84,16 @@ def main(mode: Mode, method: str, endpoint: str, main_path: str = None):
     """
     app = get_app(main_path)
     if mode == 'integration-test':
-        rich_print(f"building integration test for {endpoint}")
-        test_case_str = fetch_integration_tests(method, endpoint, app)
-        test_path = write_to_file(test_case_str, method, endpoint, app)
-        rich_print(f'Successfully build integration test, check it out: {test_path}')
-        stdout, stderr = run_pytest_and_capture_output([test_path])
-        print("Captured Standard Output:")
-        print(stdout)
-        print("\nCaptured Standard Error:")
-        print_error(stderr)
+        print('First try...')
+        tests_failed, stdout, stderr = build_and_run_tests(method, endpoint, app)
+        if tests_failed:
+            print('Second try...')
+            tests_failed, stdout2, stderr2  = build_and_run_tests(method, endpoint, app, pytest_on_terminal=True,
+                                                                  last_stdout=stdout, last_stderr=stderr)
+            if tests_failed:
+                print('AI needs human help!')
+            else:
+                print('AI could correct its own mistakes')
 
     elif mode == 'unit-test':
         raise NotImplementedError('unit-test mode has not been implemented yet')

@@ -27,6 +27,8 @@ class TestCasePayload(BaseModel):
     project_settings: Optional[str] = None
     testing_code: Optional[str] = None
     previous_implementation: Optional[str] = None
+    last_stdout: Optional[str] = None
+    last_stderr: Optional[str] = None
 
 
 def get_first_matching_route(method, endpoint_str, app):
@@ -150,7 +152,7 @@ def get_examples(app):
     return examples
 
 
-def fetch_integration_tests(method, endpoint, app):
+def fetch_integration_tests(method, endpoint, app, last_stdout=None, last_stderr=None):
 
     endpoint_function = get_endpoint_function(method, endpoint, app)
     if not endpoint_function:
@@ -164,7 +166,7 @@ def fetch_integration_tests(method, endpoint, app):
     previous_implementation = get_file_content(f'{base_name}.py')
 
     response = requests.post(
-        url=f'{BACKEND_DOMAIN}/crashless/build-integration-test',
+        url=f'{BACKEND_DOMAIN}/crashless/build-test',
         json=TestCasePayload(
             source_code=get_handler_source(endpoint_function),
             endpoint=endpoint,
@@ -175,8 +177,12 @@ def fetch_integration_tests(method, endpoint, app):
             project_settings=project_settings,
             testing_code=testing_code,
             previous_implementation=previous_implementation,
+            last_stdout=last_stdout,
+            last_stderr=last_stderr,
         ).dict()
     )
+    if response.status_code != 200:
+        raise Exception(f'build-test endpoint responded: {response.status_code} and {response.text}')
 
     return response.json().get('test_cases')
 
