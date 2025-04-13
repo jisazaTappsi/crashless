@@ -115,7 +115,7 @@ def get_file_content(filepath):
 
 
 # TODO: dont hard code here.
-BASE_DIR = 'crashless_tests'
+BASE_DIR = '.'
 API_V2 = '/api-v2'
 EXAMPLE_NO_AUTH_TEST = f'{BASE_DIR}/test_get_countries.py'
 EXAMPLE_NO_AUTH_ENDPOINT = f'{API_V2}/get-countries'

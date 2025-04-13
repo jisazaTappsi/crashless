@@ -1,3 +1,6 @@
+import io
+import pytest
+
 import typer
 from enum import Enum
 from rich.console import Console
@@ -7,6 +10,7 @@ from rich import print as rich_print
 import sys
 import importlib.util
 from cli_helper import fetch_integration_tests, write_to_file
+from crashless.handler import print_error
 
 console = Console()
 err_console = Console(stderr=True)
@@ -34,6 +38,22 @@ def get_app(main_path):
     return main_module.app
 
 
+def run_pytest_and_capture_output(args=None):
+    """Runs pytest.main() with given arguments and captures stdout and stderr."""
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    redirected_output = io.StringIO()
+    redirected_error = io.StringIO()
+    sys.stdout = redirected_output
+    sys.stderr = redirected_error
+    try:
+        pytest.main(args)
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+    return redirected_output.getvalue(), redirected_error.getvalue()
+
+
 @typer_app.command()
 def main(mode: Mode, method: str, endpoint: str, main_path: str = None):
     """
@@ -45,6 +65,11 @@ def main(mode: Mode, method: str, endpoint: str, main_path: str = None):
         test_case_str = fetch_integration_tests(method, endpoint, app)
         test_path = write_to_file(test_case_str, method, endpoint, app)
         rich_print(f'Successfully build integration test, check it out: {test_path}')
+        stdout, stderr = run_pytest_and_capture_output([test_path])
+        print("Captured Standard Output:")
+        print(stdout)
+        print("\nCaptured Standard Error:")
+        print_error(stderr)
 
     elif mode == 'unit-test':
         raise NotImplementedError('unit-test mode has not been implemented yet')
